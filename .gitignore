@@ -8,7 +8,7 @@ dist/
 
 # Snakemake run artifacts
 .snakemake/
-ibex/**/out/
-ibex/**/err/
-ibex/**/logs/
+preprocessing/**/out/
+preprocessing/**/err/
+preprocessing/**/logs/
 *.log

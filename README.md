@@ -70,11 +70,11 @@ model runs on any subset of modalities:
 ## Data processing
 
 The Snakemake pipelines that take each dataset from raw sequencing to the per-spot RNA and
-chromatin matrices are in [`ibex/`](ibex/): spliced/unspliced RNA via kb-python and ATAC
+chromatin matrices are in [`preprocessing/`](preprocessing/): spliced/unspliced RNA via kb-python and ATAC
 fragments/peaks via bwa + sinto + MACS3, for spatial-Mux-seq, MISAR-seq, and
 spatial-ATAC-RNA-seq. Their outputs are assembled into a model-ready AnnData by
 `scitoflow.preprocess.build_dataset`. The pipelines were run on a SLURM cluster; see
-[`ibex/README.md`](ibex/README.md) for accessions and how to adapt the paths.
+[`preprocessing/README.md`](preprocessing/README.md) for accessions and how to adapt the paths.
 
 ## Honest scope
 
