@@ -68,6 +68,17 @@ def build_model_adata(
     adata_rna.layers["chromatin"] = adata_chromatin.X
 
     # 4. In-tissue spots only ------------------------------------------------------
+    # Flag (do not fail) if the tissue mask looks absent: an all-ones in_tissue column means
+    # off-tissue background spots are NOT being removed. A genuine mask marks some spots 0.
+    in_tissue = adata_rna.obs["in_tissue"]
+    if (in_tissue == 1).all():
+        import warnings
+        warnings.warn(
+            f"tissue_positions in_tissue is all 1s ({len(in_tissue)} spots): no off-tissue mask is "
+            "being applied, so off-tissue background spots will contaminate the analysis. Use the "
+            "authors'/annotated tissue_positions_list.csv that marks off-tissue spots as 0.",
+            stacklevel=2,
+        )
     adata = adata_rna[adata_rna.obs["in_tissue"] == 1, :].copy()
 
     # 5. dynamo preprocessing + moments -------------------------------------------
