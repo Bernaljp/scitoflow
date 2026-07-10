@@ -1,0 +1,13 @@
+# Lightweight docs build (ReadTheDocs). Heavy runtime deps (torch, torch-geometric,
+# torchdiffeq, scanpy, sklearn) are mocked in conf.py via autodoc_mock_imports, so they
+# are not installed here. Notebooks ship pre-executed (nb_execution_mode = "off").
+sphinx>=7.2
+myst-nb>=1.1
+sphinx-book-theme>=1.1
+sphinx-design>=0.6
+sphinx-copybutton>=0.5
+numpy
+scipy
+pandas
+anndata
+matplotlib

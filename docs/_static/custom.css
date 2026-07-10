@@ -1,0 +1,32 @@
+/* scIToFlow docs: light-touch polish on top of sphinx-book-theme. */
+
+:root {
+  --stf-c: #E69F00;   /* chromatin  */
+  --stf-u: #56B4E9;   /* unspliced  */
+  --stf-s: #009E73;   /* spliced    */
+  --stf-r: #D55E00;   /* regulation */
+  --stf-h: #CC79A7;   /* niche h    */
+}
+
+/* Theme-aware hero diagram: show the variant matching the active theme. */
+html[data-theme="light"] .only-dark { display: none !important; }
+html[data-theme="dark"]  .only-light { display: none !important; }
+
+/* Landing-page grid cards: subtle lift on hover. */
+.sd-card {
+  border-radius: 12px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.sd-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+/* Slightly wider prose column for the equation-heavy architecture page. */
+.bd-article-container { max-width: 62rem; }
+
+/* Tighten inline code so cascade names (M_c, z_r) read cleanly. */
+code.literal { font-size: 0.9em; }
+
+/* Notebook output figures: center and cap width. */
+.cell_output img { max-width: 100%; height: auto; display: block; margin: 0.5rem auto; }

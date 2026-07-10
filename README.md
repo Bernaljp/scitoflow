@@ -12,6 +12,10 @@ tissue. RNA velocity is one readout of this model, not its objective; the model 
 spatial latent time, interpretable niche factors, and in-silico perturbation of either the niche
 or the regulatory program.
 
+**Documentation:** https://scitoflow.readthedocs.io (architecture reference, API, and
+executed tutorial notebooks that run on CPU). To build the docs locally:
+`pip install -e ".[docs]" && sphinx-build docs docs/_build/html`.
+
 ## Install
 
 ```bash

@@ -12,3 +12,8 @@ preprocessing/**/out/
 preprocessing/**/err/
 preprocessing/**/logs/
 *.log
+
+# Docs build artifacts
+docs/_build/
+docs/.jupyter_cache/
+**/.ipynb_checkpoints/

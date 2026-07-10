@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 310" font-family="sans-serif">
+<defs><marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 z" fill="#555555"/></marker><marker id="ahr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 z" fill="#D55E00"/></marker><marker id="ahh" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 z" fill="#CC79A7"/></marker></defs>
+<line x1="188" y1="175" x2="312" y2="175" stroke="#555555" stroke-width="2.5" marker-end="url(#ah)"/>
+<line x1="388" y1="175" x2="512" y2="175" stroke="#555555" stroke-width="2.5" marker-end="url(#ah)"/>
+<path d="M328,74 Q210,96 168,146" fill="none" stroke="#D55E00" stroke-width="2.5" marker-end="url(#ahr)"/>
+<path d="M556,148 Q560,70 384,64" fill="none" stroke="#D55E00" stroke-width="2.5" stroke-dasharray="1 0" marker-end="url(#ahr)"/>
+<path d="M232,258 Q95,150 320,74" fill="none" stroke="#CC79A7" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#ahh)"/>
+<rect x="230" y="250" width="240" height="36" rx="10" fill="#CC79A7" stroke="white" stroke-width="2"/>
+<text x="350" y="273" text-anchor="middle" font-size="13.5" font-family="sans-serif" fill="white">niche h  ·  spatial + expression GNN</text>
+<circle cx="150" cy="175" r="34" fill="#E69F00" stroke="white" stroke-width="2"/><text x="150" y="182" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-size="26" font-weight="600" fill="white">c</text><text x="150" y="227" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#1a1a1a">chromatin</text>
+<circle cx="350" cy="175" r="34" fill="#56B4E9" stroke="white" stroke-width="2"/><text x="350" y="182" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-size="26" font-weight="600" fill="white">u</text><text x="350" y="227" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#1a1a1a">unspliced</text>
+<circle cx="550" cy="175" r="34" fill="#009E73" stroke="white" stroke-width="2"/><text x="550" y="182" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-size="26" font-weight="600" fill="white">s</text><text x="550" y="227" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#1a1a1a">spliced</text>
+<circle cx="350" cy="62" r="30" fill="#D55E00" stroke="white" stroke-width="2"/><text x="350" y="69" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-size="26" font-weight="600" fill="white">r</text>
+<text x="350" y="24" text-anchor="middle" font-size="13" font-family="sans-serif" fill="#1a1a1a">regulation (feedback)</text>
+</svg>

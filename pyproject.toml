@@ -17,7 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 preprocess = ["scanpy", "dynamo-release"]   # moments + gene-activity build pipeline
 dev = ["pytest", "ruff"]
-docs = ["sphinx", "myst-nb", "sphinx-book-theme"]
+docs = ["sphinx>=7.2", "myst-nb>=1.1", "sphinx-book-theme>=1.1", "sphinx-design>=0.6", "sphinx-copybutton>=0.5"]
 
 [tool.setuptools.packages.find]
 include = ["scitoflow*"]
