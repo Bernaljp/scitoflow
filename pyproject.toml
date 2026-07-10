@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scitoflow"
+version = "0.1.0"
+description = "Spatial multi-omic latent neural-ODE for microenvironment-conditioned chromatin-to-transcription dynamics"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy", "scipy", "pandas", "scikit-learn", "anndata", "matplotlib", "tqdm",
+    "torch>=2.0", "torchdiffeq", "torch-geometric",
+]
+
+[project.optional-dependencies]
+preprocess = ["scanpy", "dynamo-release"]   # moments + gene-activity build pipeline
+dev = ["pytest", "ruff"]
+docs = ["sphinx", "myst-nb", "sphinx-book-theme"]
+
+[tool.setuptools.packages.find]
+include = ["scitoflow*"]
