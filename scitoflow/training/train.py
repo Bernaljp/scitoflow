@@ -1,11 +1,9 @@
 """
 Training loop for the scIToFlow VAE (GPU-preloaded, NeighborLoader minibatches).
 
-FAITHFUL first-pass extraction from the method-development notebook
-(Base/model1new_multivelo_organized.ipynb), Phase A1 consolidation.
-Logic preserved verbatim; only module imports were added/normalized.
-NOT yet unit-tested or made device-agnostic (hardcoded .cuda() remains) -
-that is the research-software hardening pass. See PLAN.md Phase A.
+Extracted from the method-development notebook and consolidated. The optimization logic
+is preserved; the run device is resolved once (CUDA when available, else CPU) so the loop
+runs unchanged on a GPU and also runs on CPU for small data (tutorials, tests).
 """
 
 from scitoflow.core.model import reindex_adjacency
@@ -28,14 +26,62 @@ from torch_geometric.utils import subgraph
 def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=None, batch_size=200, grad_clip=1,
               shuffle=True, test=0.1, name='', optimizer='adam', random_seed=42, checkpoint_folder=None,
               time_prior=None):
-    """
-    Training function optimized for GPU data handling.
-    
-    Key optimizations:
-    1. Pre-loads data matrices (c, u, s) to GPU tensors once, avoiding
-       sparse-to-dense conversion and CPU-GPU transfer in every batch.
-    2. Uses global boolean masks on GPU for fast train/test splitting within batches.
-    3. Removes unused model_state_history list to save memory.
+    """Train a scIToFlow :class:`~scitoflow.VAE` on a spatial multi-omic AnnData.
+
+    The compute device is resolved automatically (CUDA when available, otherwise CPU). For
+    speed, the per-modality matrices are pre-loaded to the device once and minibatches are
+    drawn with a spatial-graph :class:`~torch_geometric.loader.NeighborLoader`; the best model
+    (by held-out reconstruction + trajectory loss) is restored at the end.
+
+    Parameters
+    ----------
+    model : scitoflow.VAE
+        The model to train. It is moved to the resolved device in place.
+    adata : anndata.AnnData
+        Spots x genes. Must carry the moment layers for the model's topology (for example
+        ``M_c``, ``M_u``, ``M_s`` for ``full``) and the spatial coordinates ``x_position`` and
+        ``y_position`` in ``adata.obs``. The data are read in double precision, so build the
+        model under ``torch.set_default_dtype(torch.float64)``.
+    epochs : int, default 50
+        Number of training epochs.
+    learning_rate : float, default 1e-2
+        Optimizer learning rate (a plateau scheduler reduces it during training).
+    tangent_loss_params : dict, optional
+        Parameters of the tangent-space velocity regularizer, with keys ``a``, ``b``, and
+        ``reg_lambda`` (for example ``{"a": 1.0, "b": 10.0, "reg_lambda": 1.0}``).
+    batch_size : int, default 200
+        Number of seed spots per minibatch.
+    test : float, default 0.1
+        Fraction of spots held out for validation.
+    optimizer : {'adam', 'adamW'}, default 'adam'
+        Optimizer to use.
+    random_seed : int, default 42
+        Seed for the train/test split.
+    checkpoint_folder : str, optional
+        Directory for per-epoch checkpoints. Defaults to a folder named after ``name`` in the
+        working directory.
+    time_prior : array-like, optional
+        Per-spot time label normalized to ``[0, 1]`` (developmental stage or labeling time).
+        When given and ``model.time_prior_weight > 0``, it softly supervises latent time.
+
+    Returns
+    -------
+    epochs : numpy.ndarray
+        The epoch indices.
+    val_recon : numpy.ndarray
+        Held-out reconstruction MSE per epoch.
+    val_traj : numpy.ndarray
+        Held-out trajectory MSE per epoch.
+    edge_index_spatial : torch.Tensor
+        The ``[2, E]`` spatial neighbor graph used for training (for readouts).
+    adj_list_expression : torch.Tensor
+        The ``(N, 30)`` expression neighbor-index list (for readouts and
+        :meth:`~scitoflow.VAE.project_velocities`).
+
+    See Also
+    --------
+    scitoflow.VAE.reconstruct_latent : latent trajectories, velocity, and latent time.
+    scitoflow.simulate_dataset : a small example dataset to try this on.
     """
     
     # --- Setup Folders and Optimizer ---
@@ -52,17 +98,21 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     
     scheduler_plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.75, threshold=0.05, threshold_mode='rel', 
+        optimizer, mode='min', factor=0.75, threshold=0.05, threshold_mode='rel',
         patience=5, min_lr=1e-5,
     )
-    
+
+    # --- Device: use the GPU when available, otherwise fall back to CPU ---
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
     # --- Optimization 1: Pre-load per-modality data to GPU (topology-driven) ---
     print("Loading data and moving to GPU...")
     states = model.topo.states
     matrices = {st: adata.layers[model.topo.layer[st]] for st in states}
     expr_matrix = matrices[model.topo.terminal]   # expression kNN on the terminal RNA state
     try:
-        tensors = {st: torch.tensor(m.toarray(), dtype=torch.float64, device='cuda')
+        tensors = {st: torch.tensor(m.toarray(), dtype=torch.float64, device=device)
                    for st, m in matrices.items()}
         print("Successfully pre-loaded data to GPU.")
     except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
@@ -70,22 +120,22 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
         tensors = None
     
     # --- Optional time prior (normalized [0,1] label per cell) preloaded to GPU ---
-    time_prior_gpu = (torch.tensor(np.asarray(time_prior), dtype=torch.float64, device='cuda')
+    time_prior_gpu = (torch.tensor(np.asarray(time_prior), dtype=torch.float64, device=device)
                       if time_prior is not None else None)
 
     # --- Graph/Adjacency setup (move to GPU) ---
     x_positions = np.vstack((adata.obs['x_position'].values, adata.obs['y_position'].values)).T
     adj_matrix_spatial = kneighbors_graph(x_positions, n_neighbors=8, mode='connectivity', include_self=False)
     edge_index_coo = adj_matrix_spatial.tocoo()
-    edge_index_spatial = torch.tensor(np.vstack((edge_index_coo.row, edge_index_coo.col)), dtype=torch.long, device='cuda')
+    edge_index_spatial = torch.tensor(np.vstack((edge_index_coo.row, edge_index_coo.col)), dtype=torch.long, device=device)
     
     # Move all static graph data to GPU
-    full_data = Data(edge_index=edge_index_spatial, num_nodes=adata.n_obs).to('cuda')
+    full_data = Data(edge_index=edge_index_spatial, num_nodes=adata.n_obs).to(device)
 
     adj_matrix_expression = kneighbors_graph(expr_matrix, n_neighbors=30, mode='connectivity', include_self=False)
     # edge_index_coo_expr = adj_matrix_expression.tocoo()
-    # edge_index_expression = torch.tensor(np.vstack((edge_index_coo_expr.row, edge_index_coo_expr.col)), dtype=torch.long).to('cuda')
-    adj_list_expression = torch.tensor(adj_matrix_expression.nonzero()[1], dtype=torch.long, device='cuda').reshape(-1, 30)
+    # edge_index_expression = torch.tensor(np.vstack((edge_index_coo_expr.row, edge_index_coo_expr.col)), dtype=torch.long).to(device)
+    adj_list_expression = torch.tensor(adj_matrix_expression.nonzero()[1], dtype=torch.long, device=device).reshape(-1, 30)
     
     
     # --- Train/Test Split ---
@@ -103,20 +153,20 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
     print(f"Training on {n_train} cells, testing on {n_test} cells")
     
     # --- Optimization 2: Create global train/test masks on GPU ---
-    train_mask_global = torch.zeros(n_cells, dtype=torch.bool, device='cuda')
+    train_mask_global = torch.zeros(n_cells, dtype=torch.bool, device=device)
     train_mask_global[list(train_indices_set)] = True 
 
-    test_mask_global = torch.zeros(n_cells, dtype=torch.bool, device='cuda')
+    test_mask_global = torch.zeros(n_cells, dtype=torch.bool, device=device)
     test_mask_global[list(test_indices_set)] = True
     
     # Create a tensor of test indices for the eval step
     test_indices_array = np.array(list(test_indices_set))
-    test_indices_tensor = torch.tensor(test_indices_array, dtype=torch.long).cuda()
+    test_indices_tensor = torch.tensor(test_indices_array, dtype=torch.long).to(device)
     
     # Pre-calculate the test adjacency matrix (spatial)
     test_adj_spatial = adj_matrix_spatial[test_indices_array][:, test_indices_array]
     test_edge_coo_spatial = test_adj_spatial.tocoo()
-    edge_index_test_spatial = torch.tensor(np.vstack((test_edge_coo_spatial.row, test_edge_coo_spatial.col)), dtype=torch.long).cuda()
+    edge_index_test_spatial = torch.tensor(np.vstack((test_edge_coo_spatial.row, test_edge_coo_spatial.col)), dtype=torch.long).to(device)
 
     # --- Setup Loader and Model ---
     train_loader = NeighborLoader(full_data,
@@ -125,7 +175,7 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
                                   shuffle=True,
                                   disjoint=True)
     
-    model = model.cuda()
+    model = model.to(device)
     
     # --- Optimization 3: Removed unused model_state_history list ---
     epoch_history = [0]
@@ -145,18 +195,18 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
         # Loop directly over the data loader
         for batch in train_loader:
             optimizer.zero_grad()
-            batch_idx = batch.n_id.to('cuda')  # On GPU
+            batch_idx = batch.n_id.to(device)  # On GPU
             batch_edge_spatial_index = batch.edge_index # On GPU
             
             # (Assuming reindex_adjacency is defined and works on-GPU)
-            batch_edge_expression_index = reindex_adjacency(adj_list_expression, batch_idx, full_data.num_nodes, device='cuda')
+            batch_edge_expression_index = reindex_adjacency(adj_list_expression, batch_idx, full_data.num_nodes, device=device)
             
             # --- Optimization 1 (Batch): per-modality data dict ---
             if tensors is not None:
                 data = {st: tensors[st][batch_idx] for st in states}
             else:
                 batch_idx_cpu = batch_idx.cpu().numpy()
-                data = {st: torch.Tensor(matrices[st][batch_idx_cpu].toarray()).cuda() for st in states}
+                data = {st: torch.Tensor(matrices[st][batch_idx_cpu].toarray()).to(device) for st in states}
 
             loss, validation_ae, validation_traj, tangent_loss, orig_index = model.loss(
                 data,
@@ -207,13 +257,13 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
             if tensors is not None:
                 data_test = {st: tensors[st][test_indices_tensor] for st in states}
             else:
-                data_test = {st: torch.Tensor(matrices[st][test_indices_array].toarray()).cuda() for st in states}
+                data_test = {st: torch.Tensor(matrices[st][test_indices_array].toarray()).to(device) for st in states}
 
             # Use pre-computed test spatial graph
             edge_index_test = edge_index_test_spatial
 
             # Re-index expression graph for test set
-            test_edge_expression_index = reindex_adjacency(adj_list_expression, test_indices_tensor, full_data.num_nodes, device='cuda')
+            test_edge_expression_index = reindex_adjacency(adj_list_expression, test_indices_tensor, full_data.num_nodes, device=device)
 
             test_loss, test_validation_ae, test_validation_traj, tangent_loss, _ = model.loss(
                 data_test,
@@ -263,7 +313,7 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
     print('Loading best model at %d epochs.'%epoch_history[best_index])
     model.load_state_dict(torch.load(
         checkpoint_folder+'model_state_epoch%d.params'%epoch_history[best_index], 
-        map_location=torch.device('cuda')
+        map_location=device
     ))
     
     return np.array(epoch_history)[1:], np.array(val_ae_history)[1:], np.array(val_traj_history)[1:], edge_index_spatial, adj_list_expression
