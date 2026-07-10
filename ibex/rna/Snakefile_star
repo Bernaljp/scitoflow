@@ -1,0 +1,77 @@
+# ===================================================================
+# scIToFlow RNA spliced/unspliced via STARsolo (Velocyto) - Ibex [OPTIONAL]
+# ===================================================================
+# Cross-check for the kb pipeline. Same barcode chain (bbduk x3 -> CB+UMI
+# reshape), then STAR genomeGenerate + STARsolo --soloFeatures Gene GeneFull
+# Velocyto (Velocyto = spliced/unspliced). Uses config.yaml (shared with kb).
+# Run: snakemake -s Snakefile_star -j <cores> --rerun-incomplete
+# ===================================================================
+import os
+configfile: "config.yaml"
+
+SRA_IDS   = config["sra_accessions"]
+BBDUK     = config["bbduk_dir"]
+OUT       = config["output_dir"]
+STAR_OUT  = config["star_output_dir"]
+REF_FASTA = os.path.join(config["ref_dir"], os.path.basename(config["reference"]["fasta_url"]))
+REF_GTF   = os.path.join(config["ref_dir"], os.path.basename(config["reference"]["gtf_url"]))
+STAR_IDX  = os.path.join(os.path.dirname(config["ref_dir"]), "star_mm10_index")
+
+rule all:
+    input: expand(os.path.join(STAR_OUT, "{sra}", "align", "Solo.out", "Velocyto", "raw", "spliced.mtx"), sra=SRA_IDS)
+
+rule star_index:
+    input: fasta=REF_FASTA.rstrip(".gz"), gtf=REF_GTF.rstrip(".gz")
+    output: directory(STAR_IDX)
+    threads: 40
+    shell:
+        "mkdir -p {output} && STAR --runMode genomeGenerate --runThreadN {threads} "
+        "--genomeDir {output} --genomeFastaFiles {input.fasta} --sjdbGTFfile {input.gtf} --sjdbOverhang 100"
+
+# Barcode chain (reuses the kb pipeline's tmp outputs if present; otherwise builds them).
+rule prefetch:
+    output: os.path.join(OUT, "{sra}", "{sra}.sra")
+    shell: "prefetch --max-size 100GB --output-file {output} {wildcards.sra}"
+
+rule fastqs:
+    input: os.path.join(OUT, "{sra}", "{sra}.sra")
+    output: r1=os.path.join(OUT,"{sra}","{sra}_1.fastq.gz"), r2=os.path.join(OUT,"{sra}","{sra}_2.fastq.gz")
+    params: outdir=os.path.join(OUT,"{sra}"), tmp=os.path.join(OUT,"{sra}","tmp")
+    threads: 20
+    shell: "fasterq-dump --split-files -p -t {params.tmp} --outdir {params.outdir} --threads {threads} {input} && pigz -p {threads} {params.outdir}/{wildcards.sra}_1.fastq {params.outdir}/{wildcards.sra}_2.fastq"
+
+rule bc_primer:
+    input: r1=os.path.join(OUT,"{sra}","{sra}_1.fastq.gz"), r2=os.path.join(OUT,"{sra}","{sra}_2.fastq.gz")
+    output: o1=os.path.join(OUT,"{sra}","tmp","{sra}_R1_primer.fastq.gz"), o2=os.path.join(OUT,"{sra}","tmp","{sra}_R2_primer.fastq.gz")
+    threads: 20
+    shell: "{BBDUK} in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} k=22 mm=f rcomp=f restrictleft=30 skipr1=t hdist=2 threads={threads} literal=CAAGCGTTGGCTTCTCGCATCT"
+
+rule bc_l1:
+    input: r1=os.path.join(OUT,"{sra}","tmp","{sra}_R1_primer.fastq.gz"), r2=os.path.join(OUT,"{sra}","tmp","{sra}_R2_primer.fastq.gz")
+    output: o1=os.path.join(OUT,"{sra}","tmp","{sra}_R1_l1.fastq.gz"), o2=os.path.join(OUT,"{sra}","tmp","{sra}_R2_l1.fastq.gz")
+    threads: 20
+    shell: "{BBDUK} in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} k=30 mm=f rcomp=f restrictleft=108 skipr1=t hdist=3 threads={threads} literal=GTGGCCGATGTTTCGCATCGGCGTACGACT"
+
+rule bc_l2:
+    input: r1=os.path.join(OUT,"{sra}","tmp","{sra}_R1_l1.fastq.gz"), r2=os.path.join(OUT,"{sra}","tmp","{sra}_R2_l1.fastq.gz")
+    output: r1=os.path.join(OUT,"{sra}","tmp","{sra}_R1_l2.fastq"), o2=os.path.join(OUT,"{sra}","tmp","{sra}_R2_l2.fastq.gz")
+    threads: 20
+    shell: "{BBDUK} in1={input.r1} in2={input.r2} outm1={output.r1} outm2={output.o2} k=30 mm=f rcomp=f restrictleft=70 skipr1=t hdist=3 threads={threads} literal=ATCCACGTGCTTGAGAGGCCAGAGCATTCG"
+
+rule fq_process:
+    input: os.path.join(OUT,"{sra}","tmp","{sra}_R2_l2.fastq.gz")
+    output: os.path.join(OUT,"{sra}","tmp","{sra}_R2_processed.fastq")
+    shell: "python {workflow.basedir}/fastq_process.py --input {input} --output {output}"
+
+rule starsolo:
+    input:
+        seq=os.path.join(OUT,"{sra}","tmp","{sra}_R1_l2.fastq"),        # cDNA (uncompressed from bc_l2)
+        bc=os.path.join(OUT,"{sra}","tmp","{sra}_R2_processed.fastq"),  # CB(16)+UMI(10)
+        idx=STAR_IDX,
+    output: os.path.join(STAR_OUT, "{sra}", "align", "Solo.out", "Velocyto", "raw", "spliced.mtx")
+    params: prefix=os.path.join(STAR_OUT, "{sra}", "align") + "/", wl=lambda w: os.path.join(workflow.basedir, config["whitelist"])
+    threads: 20
+    shell:
+        "mkdir -p {params.prefix} && STAR --runThreadN {threads} --genomeDir {input.idx} "
+        "--readFilesIn {input.seq} {input.bc} --soloType CB_UMI_Simple --soloCBwhitelist {params.wl} "
+        "--soloFeatures Gene GeneFull Velocyto --soloUMIdedup 1MM_All --outFileNamePrefix {params.prefix}"

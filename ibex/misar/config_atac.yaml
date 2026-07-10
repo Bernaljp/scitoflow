@@ -1,0 +1,19 @@
+# MISAR-seq ATAC (chromatin) - 8 brain sections, raw -> fragments -> peaks.
+sra_accessions:
+  - "SRR28116072"   # E11.0 S1
+  - "SRR28116071"   # E11.0 S2
+  - "SRR28116084"   # E13.5 S1
+  - "SRR28116083"   # E13.5 S2
+  - "SRR28116082"   # E15.5 S1
+  - "SRR28116081"   # E15.5 S2
+  - "SRR28116080"   # E18.5 S1
+  - "SRR28116079"   # E18.5 S2
+
+genome_fasta: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10/GCF_000001635.20_GRCm38_genomic.fna"
+bwa_index_prefix: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10/bwa/mm10"
+
+output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/MISAR_mm10"
+log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs/misar_atac"
+
+whitelist: "misar_barcodes.txt"   # 2500 MISAR spatial barcodes (16bp)
+macs_genome: "mm"

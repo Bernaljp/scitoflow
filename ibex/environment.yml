@@ -1,0 +1,35 @@
+# Reproducible conda env for the scIToFlow alignment pipelines on KAUST Ibex.
+# Holds the tools that are NOT clean Lmod modules (kb-python, bustools, sinto,
+# taggd, bbmap, biopython) plus the standard ones, so the Snakefiles do not
+# depend on fragile per-site module names. Build once:
+#   mamba env create -f ibex/environment.yml    # -> env "scitoflow-align"
+# then each sbatch does:  source ~/miniconda3/etc/profile.d/conda.sh; conda activate scitoflow-align
+name: scitoflow-align
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - snakemake-minimal>=7.32
+  - kb-python            # pulls kallisto + bustools
+  - kallisto
+  - bustools
+  - star>=2.7.10
+  - bwa
+  - samtools>=1.16
+  - htslib               # bgzip / tabix
+  - bedtools
+  - macs3>=3.0
+  - sra-tools>=3.0
+  - trim-galore
+  - bbmap                # bbduk.sh
+  - sinto
+  - biopython
+  - pigz
+  - pandas
+  - numpy
+  - scipy
+  - pip
+  - pip:
+      - taggd           # taggd_demultiplex (no conda build for py3.11)
+      - "setuptools<81"  # sinto imports pkg_resources, removed in setuptools>=81

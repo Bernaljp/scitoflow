@@ -1,0 +1,38 @@
+# scIToFlow RNA (spliced/unspliced) kb-python config for Ibex.
+# One config per dataset; swap sra_accessions/output_dir for zhang.
+
+# --- Samples (spatial-Mux-seq RNA runs) ---
+# guo GSE263333: SRR28572641 = ME13_50um_3 embryo, SRR30535682 = 5M_20um,
+#                SRR28572637 = P21_brain_20um (add when reprocessing the brain).
+sra_accessions:
+  - "SRR28572641"
+  - "SRR30535682"
+
+# All spatial-Mux-seq RNA libraries share the same barcode chemistry; fastq_process.py
+# reshapes R2 to 16bp CB + 10bp UMI, so kb's built-in 10xv2 preset parses it.
+technologies: "10xv2"
+
+# --- Reference (GRCm38 / mm10, NCBI GCF_000001635.20) ---
+reference:
+  fasta_url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.20_GRCm38/GCF_000001635.20_GRCm38_genomic.fna.gz"
+  gtf_url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.20_GRCm38/GCF_000001635.20_GRCm38_genomic.gtf.gz"
+
+# kb workflow: 'nac' (nascent/mature/ambiguous, current standard) -> layers mature+nascent,
+# consumed by scitoflow.preprocess.build_dataset. (The old scripts used deprecated 'lamanno'.)
+kb_workflow: "nac"
+
+# --- Paths on Ibex ---
+output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/guoMultiplexedSpatialMapping2025_mm10"
+ref_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10_nac"
+log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs"
+
+# --- Tools (from the scitoflow-align conda env; on PATH after activation) ---
+bbduk_dir: "bbduk.sh"
+
+# Full 2500-spot spatial whitelist (shipped alongside this Snakefile). kb quantifies all
+# spots; build_dataset filters to in-tissue via the GEO tissue_positions_list.csv later.
+whitelist: "spatial_barcodes.txt"
+
+# --- STAR (optional cross-check) output ---
+star_output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/star_mm10_guo"
+star_log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs/star_pipeline"

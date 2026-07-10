@@ -1,0 +1,15 @@
+# scIToFlow ATAC (chromatin) config for Ibex - raw SRA -> fragments -> peaks.
+# guo GSE263333 ATAC runs: SRR28572640 = ME13_50um_3 embryo ATAC.
+sra_accessions:
+  - "SRR28572640"
+
+# GRCm38/mm10 genome for bwa (reuse the decompressed NCBI fna already on Ibex).
+genome_fasta: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10/GCF_000001635.20_GRCm38_genomic.fna"
+bwa_index_prefix: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10/bwa/mm10"
+
+output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/guoMultiplexedSpatialMapping2025_mm10"
+log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs/atac"
+
+bbduk_dir: "bbduk.sh"
+whitelist: "spatial_barcodes.txt"   # full 2500-spot ATAC whitelist (shipped alongside)
+macs_genome: "mm"                   # MACS3 effective genome size (was wrongly 'hs')

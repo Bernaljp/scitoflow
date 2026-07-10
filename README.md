@@ -67,6 +67,15 @@ model runs on any subset of modalities:
 - **Optional time prior.** A known time label (developmental stage or metabolic-labeling time)
   can softly supervise the latent time without forcing a per-cell correspondence.
 
+## Data processing
+
+The Snakemake pipelines that take each dataset from raw sequencing to the per-spot RNA and
+chromatin matrices are in [`ibex/`](ibex/): spliced/unspliced RNA via kb-python and ATAC
+fragments/peaks via bwa + sinto + MACS3, for spatial-Mux-seq, MISAR-seq, and
+spatial-ATAC-RNA-seq. Their outputs are assembled into a model-ready AnnData by
+`scitoflow.preprocess.build_dataset`. The pipelines were run on a SLURM cluster; see
+[`ibex/README.md`](ibex/README.md) for accessions and how to adapt the paths.
+
 ## Honest scope
 
 The niche counterfactual and in-silico knockout are interrogations of the *fitted model* (they

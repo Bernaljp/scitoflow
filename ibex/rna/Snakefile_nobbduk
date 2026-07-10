@@ -1,0 +1,57 @@
+# ===================================================================
+# scIToFlow RNA (kb) WITHOUT bbduk pre-filter - Ibex
+# ===================================================================
+# bbduk stalls on this node (memory-capped it still hangs on I/O). It is only a
+# QC pre-filter for primer/linker presence; fastq_process.py reshapes R2 from
+# FIXED positions (BC2[22:30]+BC1[60:68]+UMI[98:108]) regardless, and kb's 2500-spot
+# whitelist discards any malformed barcodes. So we go straight raw R2 -> CB/UMI -> kb.
+# Same lamanno index reuse. Run: snakemake -s Snakefile_nobbduk --configfile config_brain.yaml ...
+# ===================================================================
+import os
+configfile: "config_brain.yaml"
+SRA = config["sra_accessions"]
+OUT = config["output_dir"]; REF = config["ref_dir"]; LOG = config["log_dir"]
+IDX, T2G, C1, C2 = config["idx_name"], config["t2g_name"], config["c1_name"], config["c2_name"]
+
+rule all:
+    input: expand(os.path.join(OUT, "gencode", "{sra}", "counts_unfiltered", "adata.h5ad"), sra=SRA)
+
+rule prefetch:
+    output: os.path.join(OUT, "{sra}", "{sra}.sra")
+    params: outdir=OUT
+    shell: "prefetch --max-size 100GB --output-directory {params.outdir} {wildcards.sra}"
+
+rule fastqs:
+    input: os.path.join(OUT, "{sra}", "{sra}.sra")
+    output:
+        r1=os.path.join(OUT, "{sra}", "{sra}_1.fastq.gz"),   # cDNA
+        r2=os.path.join(OUT, "{sra}", "{sra}_2.fastq.gz"),   # barcode read
+    params: d=os.path.join(OUT, "{sra}"), tmp=os.path.join(OUT, "{sra}", "tmp")
+    threads: 16
+    shell:
+        "fasterq-dump --split-files -p -t {params.tmp} --outdir {params.d} --threads {threads} {input} && "
+        "pigz -p {threads} {params.d}/{wildcards.sra}_1.fastq {params.d}/{wildcards.sra}_2.fastq"
+
+rule fq_process:
+    input: os.path.join(OUT, "{sra}", "{sra}_2.fastq.gz")
+    output: os.path.join(OUT, "{sra}", "tmp", "{sra}_R2_processed.fastq")
+    log: os.path.join(LOG, "fq_process", "{sra}.log")
+    shell: "python {workflow.basedir}/fastq_process.py --input {input} --output {output} > {log} 2>&1"
+
+rule kb_count:
+    input:
+        cbumi=os.path.join(OUT, "{sra}", "tmp", "{sra}_R2_processed.fastq"),
+        cdna=os.path.join(OUT, "{sra}", "{sra}_1.fastq.gz"),
+        idx=os.path.join(REF, IDX), t2g=os.path.join(REF, T2G),
+        c1=os.path.join(REF, C1), c2=os.path.join(REF, C2),
+    output: os.path.join(OUT, "gencode", "{sra}", "counts_unfiltered", "adata.h5ad")
+    params: out=os.path.join(OUT, "gencode", "{sra}"), tmp=os.path.join(OUT, "gencode", "{sra}", "tmp")
+    log: os.path.join(LOG, "kb_count", "{sra}.log")
+    threads: 20
+    shell:
+        """
+        kb count -x 10xv2 --workflow {config[kb_workflow]} --h5ad --overwrite --tmp {params.tmp} \
+            -t {threads} -m 64G -i {input.idx} -g {input.t2g} -c1 {input.c1} -c2 {input.c2} \
+            -o {params.out} -w {workflow.basedir}/{config[whitelist]} \
+            {input.cbumi} {input.cdna} > {log} 2>&1
+        """

@@ -1,0 +1,25 @@
+# MISAR-seq RNA (spliced/unspliced via kb) - 8 brain sections, 4 dev stages.
+# Reuses the existing mm10 lamanno index (same genome), MISAR barcode structure/whitelist.
+sra_accessions:
+  - "SRR28116086"   # E11.0 S1
+  - "SRR28116085"   # E11.0 S2
+  - "SRR28116078"   # E13.5 S1
+  - "SRR28116077"   # E13.5 S2
+  - "SRR28116076"   # E15.5 S1
+  - "SRR28116075"   # E15.5 S2
+  - "SRR28116074"   # E18.5 S1
+  - "SRR28116073"   # E18.5 S2
+technologies: "10xv2"
+kb_workflow: "lamanno"
+
+output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/MISAR_mm10"
+ref_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10"
+log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs/misar"
+
+# reuse existing lamanno reference (no rebuild)
+idx_name: "mouse.idx"
+t2g_name: "t2g.txt"
+c1_name:  "cDNA_t2c.txt"
+c2_name:  "intron_t2c.txt"
+
+whitelist: "misar_barcodes.txt"   # 2500 MISAR spatial barcodes (16bp)

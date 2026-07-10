@@ -1,0 +1,42 @@
+# ===================================================================
+# Deng/Zhang 2023 spatial-ATAC-RNA-seq RNA -> spliced/unspliced via kb-python - Ibex
+# ===================================================================
+# DBiT chemistry (Fan lab). fastqs already downloaded from ENA (skip prefetch/fasterq).
+# fastq_process.py reshapes R2 into a 16bp CB (BC2+BC1 @ pos 22:30,60:68) + 10bp UMI
+# (@ 98:108); kb -x 10xv2 --workflow lamanno gives velocity spliced/unspliced. Reuses the
+# mm10 lamanno index (same as Guo/brain). Whitelist = Fan-lab spatial_barcodes.txt (2500x16bp).
+# Run: snakemake -s Snakefile_rna --configfile config_rna.yaml -j <cores> --rerun-incomplete
+# ===================================================================
+import os
+configfile: "config_rna.yaml"
+SRA = config["sra_accessions"]
+OUT = config["output_dir"]; REF = config["ref_dir"]; LOG = config["log_dir"]
+IDX, T2G, C1, C2 = config["idx_name"], config["t2g_name"], config["c1_name"], config["c2_name"]
+
+rule all:
+    input: expand(os.path.join(OUT, "gencode", "{sra}", "counts_unfiltered", "adata.h5ad"), sra=SRA)
+
+# fastqs already present at OUT/{sra}/{sra}_1.fastq.gz (cDNA) + _2.fastq.gz (barcode read)
+
+rule split_bc:
+    input: os.path.join(OUT, "{sra}", "{sra}_2.fastq.gz")
+    output: os.path.join(OUT, "{sra}", "tmp", "{sra}_CBUMI.fastq")
+    shell: "python {workflow.basedir}/fastq_process.py -i {input} -o {output}"
+
+rule kb_count:
+    input:
+        cbumi=os.path.join(OUT, "{sra}", "tmp", "{sra}_CBUMI.fastq"),
+        cdna=os.path.join(OUT, "{sra}", "{sra}_1.fastq.gz"),
+        idx=os.path.join(REF, IDX), t2g=os.path.join(REF, T2G),
+        c1=os.path.join(REF, C1), c2=os.path.join(REF, C2),
+    output: os.path.join(OUT, "gencode", "{sra}", "counts_unfiltered", "adata.h5ad")
+    params: out=os.path.join(OUT, "gencode", "{sra}"), tmp=os.path.join(OUT, "gencode", "{sra}", "tmp")
+    log: os.path.join(LOG, "kb_count", "{sra}.log")
+    threads: 20
+    shell:
+        """
+        kb count -x 10xv2 --workflow {config[kb_workflow]} --h5ad --overwrite --tmp {params.tmp} \
+            -t {threads} -m 64G -i {input.idx} -g {input.t2g} -c1 {input.c1} -c2 {input.c2} \
+            -o {params.out} -w {workflow.basedir}/{config[whitelist]} \
+            {input.cbumi} {input.cdna} > {log} 2>&1
+        """

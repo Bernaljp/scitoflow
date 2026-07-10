@@ -1,0 +1,166 @@
+# ===================================================================
+# scIToFlow RNA spliced/unspliced via kb-python (nac workflow) - Ibex
+# ===================================================================
+# Adapted from the user's kb_pipeline/Snakefile with fixes:
+#   * --workflow nac (was deprecated lamanno); layers mature+nascent
+#   * whitelist = the full 2500-spot spatial_barcodes.txt (removes the
+#     undefined tissue_barcodes.txt dependency; in-tissue filtering happens
+#     later in scitoflow.preprocess.build_dataset)
+#   * filter_L2 stats path fixed to {sra}/qc/
+#   * fasterq-dump + pigz kept in one rule so Snakemake --rerun-incomplete
+#     never leaves a half-written cache (the failure we hit running locally)
+# Tools come from the `scitoflow-align` conda env (see ibex/environment.yml),
+# activated by the sbatch wrapper. Run:  snakemake -j <cores> --rerun-incomplete
+# ===================================================================
+import os
+configfile: "config.yaml"
+
+SRA_IDS   = config["sra_accessions"]
+WORKFLOW  = config.get("kb_workflow", "nac")
+BBDUK     = config["bbduk_dir"]
+WHITELIST = config["whitelist"]
+# Reference filenames (defaults = nac; override for a prebuilt lamanno index reuse).
+IDX_NAME  = config.get("idx_name", "index.idx")
+T2G_NAME  = config.get("t2g_name", "t2g.txt")
+C1_NAME   = config.get("c1_name", "cdna_t2c.txt")
+C2_NAME   = config.get("c2_name", "nascent_t2c.txt")
+
+def technology(wildcards):
+    t = config["technologies"]
+    return t if isinstance(t, str) else t[SRA_IDS.index(wildcards.sra)]
+
+REF_FASTA = os.path.join(config["ref_dir"], os.path.basename(config["reference"]["fasta_url"]))
+REF_GTF   = os.path.join(config["ref_dir"], os.path.basename(config["reference"]["gtf_url"]))
+
+rule all:
+    input:
+        expand(os.path.join(config["output_dir"], "gencode", "{sra}",
+                            "counts_unfiltered", "adata.h5ad"), sra=SRA_IDS)
+
+# --- Reference + kb nac index ---------------------------------------
+rule download_reference:
+    output: fasta=REF_FASTA, gtf=REF_GTF
+    params: fu=config["reference"]["fasta_url"], gu=config["reference"]["gtf_url"]
+    log: os.path.join(config["log_dir"], "download_reference.log")
+    shell: "wget -O {output.fasta} {params.fu} > {log} 2>&1 && wget -O {output.gtf} {params.gu} >> {log} 2>&1"
+
+rule kb_build_index:
+    input: fasta=REF_FASTA, gtf=REF_GTF
+    output:
+        idx=os.path.join(config["ref_dir"], IDX_NAME),
+        t2g=os.path.join(config["ref_dir"], T2G_NAME),
+        cdna_t2c=os.path.join(config["ref_dir"], C1_NAME),
+        nascent_t2c=os.path.join(config["ref_dir"], C2_NAME),
+    params:
+        cdna=os.path.join(config["ref_dir"], "cdna.fa"),
+        nascent=os.path.join(config["ref_dir"], "nascent.fa"),
+        tmp=os.path.join(config["ref_dir"], "tmp"),
+    log: os.path.join(config["log_dir"], "kb_ref.log")
+    threads: 40
+    shell:
+        """
+        kb ref --workflow {WORKFLOW} --tmp {params.tmp} \
+            -i {output.idx} -g {output.t2g} \
+            -f1 {params.cdna} -f2 {params.nascent} \
+            -c1 {output.cdna_t2c} -c2 {output.nascent_t2c} \
+            {input.fasta} {input.gtf} > {log} 2>&1
+        """
+
+# --- SRA -> fastq (one rule, robust to interruption) ----------------
+rule prefetch_sra:
+    output: os.path.join(config["output_dir"], "{sra}", "{sra}.sra")
+    params: outdir=config["output_dir"]
+    log: os.path.join(config["log_dir"], "prefetch", "{sra}.log")
+    shell: "prefetch --max-size 100GB --output-directory {params.outdir} {wildcards.sra} > {log} 2>&1"
+
+rule get_fastqs:
+    input: os.path.join(config["output_dir"], "{sra}", "{sra}.sra")
+    output:
+        r1=os.path.join(config["output_dir"], "{sra}", "{sra}_1.fastq.gz"),
+        r2=os.path.join(config["output_dir"], "{sra}", "{sra}_2.fastq.gz"),
+    params:
+        outdir=os.path.join(config["output_dir"], "{sra}"),
+        tmp=os.path.join(config["output_dir"], "{sra}", "tmp"),
+    log: os.path.join(config["log_dir"], "fasterq_dump", "{sra}.log")
+    threads: 20
+    shell:
+        """
+        fasterq-dump --split-files -p -t {params.tmp} --outdir {params.outdir} \
+            --threads {threads} {input} > {log} 2>&1
+        pigz -p {threads} {params.outdir}/{wildcards.sra}_1.fastq {params.outdir}/{wildcards.sra}_2.fastq >> {log} 2>&1
+        """
+
+# --- Barcode chain (bbduk primer/linker1/linker2 -> CB+UMI reshape) --
+rule filter_primer:
+    input:
+        r1=os.path.join(config["output_dir"], "{sra}", "{sra}_1.fastq.gz"),
+        r2=os.path.join(config["output_dir"], "{sra}", "{sra}_2.fastq.gz"),
+    output:
+        o1=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R1_primer.fastq.gz"),
+        o2=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_primer.fastq.gz"),
+    params: stats=os.path.join(config["output_dir"], "{sra}", "qc", "{sra}_primer.txt")
+    threads: 20
+    shell:
+        "{BBDUK} -Xmx60g in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} "
+        "k=22 mm=f rcomp=f restrictleft=30 skipr1=t hdist=2 threads={threads} "
+        "stats={params.stats} literal=CAAGCGTTGGCTTCTCGCATCT"
+
+rule filter_L1:
+    input:
+        r1=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R1_primer.fastq.gz"),
+        r2=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_primer.fastq.gz"),
+    output:
+        o1=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R1_l1.fastq.gz"),
+        o2=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_l1.fastq.gz"),
+    params: stats=os.path.join(config["output_dir"], "{sra}", "qc", "{sra}_linker1.txt")
+    threads: 20
+    shell:
+        "{BBDUK} -Xmx60g in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} "
+        "k=30 mm=f rcomp=f restrictleft=108 skipr1=t hdist=3 threads={threads} "
+        "stats={params.stats} literal=GTGGCCGATGTTTCGCATCGGCGTACGACT"
+
+rule filter_L2:
+    input:
+        r1=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R1_l1.fastq.gz"),
+        r2=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_l1.fastq.gz"),
+    output:
+        o1=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R1_l2.fastq.gz"),
+        o2=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_l2.fastq.gz"),
+    params: stats=os.path.join(config["output_dir"], "{sra}", "qc", "{sra}_linker2.txt")
+    threads: 20
+    shell:
+        "{BBDUK} -Xmx60g in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} "
+        "k=30 mm=f rcomp=f restrictleft=70 skipr1=t hdist=3 threads={threads} "
+        "stats={params.stats} literal=ATCCACGTGCTTGAGAGGCCAGAGCATTCG"
+
+rule fq_process:
+    input: os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_l2.fastq.gz")
+    output: os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_processed.fastq")
+    log: os.path.join(config["log_dir"], "fq_process", "{sra}.log")
+    shell: "python {workflow.basedir}/fastq_process.py --input {input} --output {output} > {log} 2>&1"
+
+# --- kb count (nac) -> counts_unfiltered/adata.h5ad -----------------
+rule kb_count:
+    input:
+        idx=os.path.join(config["ref_dir"], IDX_NAME),
+        t2g=os.path.join(config["ref_dir"], T2G_NAME),
+        cdna_t2c=os.path.join(config["ref_dir"], C1_NAME),
+        nascent_t2c=os.path.join(config["ref_dir"], C2_NAME),
+        read1=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R2_processed.fastq"),  # CB+UMI
+        read2=os.path.join(config["output_dir"], "{sra}", "tmp", "{sra}_R1_l2.fastq.gz"),       # cDNA
+    output:
+        os.path.join(config["output_dir"], "gencode", "{sra}", "counts_unfiltered", "adata.h5ad"),
+    params:
+        out=os.path.join(config["output_dir"], "gencode", "{sra}"),
+        tech=technology,
+        tmp=os.path.join(config["output_dir"], "gencode", "{sra}", "tmp"),
+    log: os.path.join(config["log_dir"], "kb_count", "{sra}.log")
+    threads: 20
+    shell:
+        """
+        kb count -x {params.tech} --workflow {WORKFLOW} --h5ad --overwrite \
+            --tmp {params.tmp} -t {threads} -m 64G \
+            -i {input.idx} -g {input.t2g} -c1 {input.cdna_t2c} -c2 {input.nascent_t2c} \
+            -o {params.out} -w {workflow.basedir}/{WHITELIST} \
+            {input.read1} {input.read2} > {log} 2>&1
+        """

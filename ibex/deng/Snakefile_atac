@@ -1,0 +1,89 @@
+# ===================================================================
+# Deng/Zhang 2023 spatial-ATAC-RNA-seq ATAC -> fragments -> peaks - Ibex
+# ===================================================================
+# DBiT chemistry (Fan lab). fastqs already downloaded (skip prefetch/fasterq). BC_process.py
+# splits R2 into a genomic mate (seq[123:], after BC2@22:30 + BC1@60:68 + Tn5 ME) + a 16bp
+# barcode (BC2+BC1); original R1 is the other genomic mate. taggd-correct vs the 2500 Fan-lab
+# whitelist, attach to read names, trim (--nextera), bwa mem, sinto fragments (NC_->chr remap),
+# MACS3 peaks. Reuses the mm10 NCBI genome + bwa index (built for MISAR).
+# Run: snakemake -s Snakefile_atac --configfile config_atac.yaml -j <cores> --rerun-incomplete
+# ===================================================================
+import os
+configfile: "config_atac.yaml"
+SRA = config["sra_accessions"]
+OUT = config["output_dir"]; LOG = config["log_dir"]
+GENOME = config["genome_fasta"]; BWAIDX = config["bwa_index_prefix"]; MACS_G = config["macs_genome"]
+
+def d(sra, *p): return os.path.join(OUT, sra, "atac", *p)
+
+rule all:
+    input: expand(os.path.join(OUT, "{sra}", "atac", "{sra}_ATAC_peaks.narrowPeak"), sra=SRA)
+
+# fastqs already present (OUT/{sra}/{sra}_1.fastq.gz genomic mate1, _2.fastq.gz barcode+genomic).
+# bwa index reused from reference/mm10/bwa/mm10 (built for MISAR); rule kept in case it is missing.
+rule bwa_index:
+    input: GENOME
+    output: BWAIDX + ".bwt"
+    log: os.path.join(LOG, "bwa_index.log")
+    shell: "mkdir -p $(dirname {BWAIDX}) && bwa index -p {BWAIDX} {input} > {log} 2>&1"
+
+rule split_bc:
+    input: os.path.join(OUT, "{sra}", "{sra}_2.fastq.gz")
+    output:
+        genomic=d("{sra}", "tmp", "{sra}_R2genomic.fastq"),   # BC_process output_R1 = seq[123:]
+        bc=d("{sra}", "tmp", "{sra}_BC.fastq"),               # BC_process output_R2 = BC2+BC1 (16bp)
+    shell: "python {workflow.basedir}/BC_process.py -i {input} -o1 {output.genomic} -o2 {output.bc}"
+
+rule taggd:
+    input: d("{sra}", "tmp", "{sra}_BC.fastq")
+    output: d("{sra}", "tmp", "{sra}_BC_tagged_results.tsv")
+    params: prefix=d("{sra}", "tmp", "{sra}_BC_tagged")
+    threads: 16
+    shell: "taggd_demultiplex --k 5 --subprocesses {threads} {workflow.basedir}/{config[whitelist]} {input} {params.prefix}"
+
+rule add_bc:
+    input:
+        r1=os.path.join(OUT, "{sra}", "{sra}_1.fastq.gz"),
+        r2=d("{sra}", "tmp", "{sra}_R2genomic.fastq"),
+        tsv=d("{sra}", "tmp", "{sra}_BC_tagged_results.tsv"),
+    output:
+        r1=d("{sra}", "tmp", "{sra}_R1_bc.fastq"), r2=d("{sra}", "tmp", "{sra}_R2_bc.fastq")
+    shell: "python {workflow.basedir}/add_BC.py -i1 {input.r1} -i2 {input.r2} -l {input.tsv} -o1 {output.r1} -o2 {output.r2}"
+
+rule trim:
+    input: r1=d("{sra}", "tmp", "{sra}_R1_bc.fastq"), r2=d("{sra}", "tmp", "{sra}_R2_bc.fastq")
+    output: r1=d("{sra}", "tmp", "trim", "{sra}_R1_bc_val_1.fq"), r2=d("{sra}", "tmp", "trim", "{sra}_R2_bc_val_2.fq")
+    params: outdir=d("{sra}", "tmp", "trim")
+    shell: "trim_galore --paired --nextera --stringency 5 --cores 4 -o {params.outdir} {input.r1} {input.r2}"
+
+rule bwa_align:
+    input:
+        r1=d("{sra}", "tmp", "trim", "{sra}_R1_bc_val_1.fq"), r2=d("{sra}", "tmp", "trim", "{sra}_R2_bc_val_2.fq"),
+        idx=BWAIDX + ".bwt",
+    output: d("{sra}", "{sra}.sort.bam")
+    threads: 16
+    resources: mem_mb=45000
+    shell:
+        "bwa mem -t {threads} {BWAIDX} {input.r1} {input.r2} | "
+        "samtools sort -@ 4 -m 2G -T {output}.tmp -o {output} - && samtools index {output}"
+
+rule fragments:
+    input: d("{sra}", "{sra}.sort.bam")
+    output: d("{sra}", "{sra}.fragments.filtered.tsv.gz")
+    params:
+        mapfile=os.path.join(workflow.basedir, "ncbi2ucsc.tsv"),
+        awkfile=os.path.join(workflow.basedir, "remap_chrom.awk"),
+    threads: 8
+    resources: mem_mb=30000
+    shell:
+        "sinto fragments -b {input} -p {threads} -f {output}.bed --barcode_regex '[^:]*' -m 30 --use_chrom '(?i)^NC_0' && "
+        "awk -v MAP={params.mapfile} -f {params.awkfile} {output}.bed | "
+        "sort -k1,1 -k2,2n | bgzip -c > {output} && rm -f {output}.bed && tabix -p bed {output}"
+
+rule peaks:
+    input: d("{sra}", "{sra}.fragments.filtered.tsv.gz")
+    output: os.path.join(OUT, "{sra}", "atac", "{sra}_ATAC_peaks.narrowPeak")
+    params: outdir=os.path.join(OUT, "{sra}", "atac"), name="{sra}_ATAC"
+    shell:
+        "macs3 callpeak -t {input} -f BEDPE -g {MACS_G} -n {params.name} --outdir {params.outdir} "
+        "--nomodel --shift -100 --extsize 200 -B --SPMR --keep-dup all -q 0.05"

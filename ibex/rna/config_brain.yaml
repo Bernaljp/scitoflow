@@ -1,0 +1,28 @@
+# Brain RNA (P21_20um, SRR28572637) - reuses the EXISTING lamanno index that
+# produced the embryo, so the brain data is consistent and no index rebuild is needed.
+sra_accessions:
+  - "SRR28572637"
+technologies: "10xv2"
+
+# Not used (index already built); kept so the Snakefile parses.
+reference:
+  fasta_url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.20_GRCm38/GCF_000001635.20_GRCm38_genomic.fna.gz"
+  gtf_url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.20_GRCm38/GCF_000001635.20_GRCm38_genomic.gtf.gz"
+
+kb_workflow: "lamanno"            # match the embryo (mature/nascent output)
+
+output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/guoMultiplexedSpatialMapping2025_mm10"
+ref_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10"    # existing lamanno ref
+log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs"
+
+# reuse the existing lamanno reference files (skips download + index build)
+idx_name: "mouse.idx"
+t2g_name: "t2g.txt"
+c1_name:  "cDNA_t2c.txt"
+c2_name:  "intron_t2c.txt"
+
+bbduk_dir: "bbduk.sh"
+whitelist: "spatial_barcodes.txt"   # full 2500-spot grid (same as embryo/brain)
+
+star_output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/star_mm10_guo"
+star_log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs/star_pipeline"

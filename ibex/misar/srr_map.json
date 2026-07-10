@@ -1,0 +1,22 @@
+{
+ "rna": {
+  "E18.5_Embryo_Brain_Section2": "SRR28116073",
+  "E15.5_Embryo_Brain_Section1": "SRR28116076",
+  "E13.5_Embryo_Brain_Section1": "SRR28116078",
+  "E15.5_Embryo_Brain_Section2": "SRR28116075",
+  "E18.5_Embryo_Brain_Section1": "SRR28116074",
+  "E13.5_Embryo_Brain_Section2": "SRR28116077",
+  "E11.0_Embryo_Brain_Section2": "SRR28116085",
+  "E11.0_Embryo_Brain_Section1": "SRR28116086"
+ },
+ "atac": {
+  "E11.0_Embryo_Brain_Section2": "SRR28116071",
+  "E13.5_Embryo_Brain_Section1": "SRR28116084",
+  "E18.5_Embryo_Brain_Section2": "SRR28116079",
+  "E18.5_Embryo_Brain_Section1": "SRR28116080",
+  "E15.5_Embryo_Brain_Section2": "SRR28116081",
+  "E13.5_Embryo_Brain_Section2": "SRR28116083",
+  "E11.0_Embryo_Brain_Section1": "SRR28116072",
+  "E15.5_Embryo_Brain_Section1": "SRR28116082"
+ }
+}

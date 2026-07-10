@@ -1,0 +1,16 @@
+# Deng/Zhang 2023 spatial-ATAC-RNA-seq RNA (mouse ME13 embryo + brain). Reuses mm10 lamanno index.
+sra_accessions:
+  - "SRR19441281"   # ME13 embryo (E13) 25um RNA
+  - "SRR19441282"   # MouseBrain 20um RNA
+
+output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/Deng_mm10"
+ref_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10"
+log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs/deng_rna"
+
+idx_name: "mouse.idx"
+t2g_name: "t2g.txt"
+c1_name:  "cDNA_t2c.txt"
+c2_name:  "intron_t2c.txt"
+kb_workflow: "lamanno"
+
+whitelist: "spatial_barcodes.txt"   # Fan-lab Deng 2500x16bp spatial barcodes (BC2+BC1)

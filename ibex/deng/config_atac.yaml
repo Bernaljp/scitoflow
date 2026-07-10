@@ -1,0 +1,12 @@
+# Deng/Zhang 2023 spatial-ATAC-RNA-seq ATAC (mouse ME13 embryo + brain). Reuses mm10 NCBI genome + bwa index.
+sra_accessions:
+  - "SRR19441285"   # ME13 embryo (E13) 25um ATAC (274M reads - large)
+  - "SRR19441286"   # MouseBrain 20um ATAC
+
+genome_fasta: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10/GCF_000001635.20_GRCm38_genomic.fna"
+bwa_index_prefix: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/reference/mm10/bwa/mm10"
+output_dir: "/ibex/scratch/projects/c2012/bernaljp/SpatialData/results/Deng_mm10"
+log_dir:    "/ibex/scratch/projects/c2012/bernaljp/SpatialData/logs/deng_atac"
+
+whitelist: "spatial_barcodes.txt"
+macs_genome: "mm"

@@ -1,0 +1,57 @@
+# ===================================================================
+# MISAR-seq RNA -> spliced/unspliced via kb-python - Ibex
+# ===================================================================
+# MISAR-seq is a different chemistry (DBiT + SHARE) than spatial-Mux-seq, so there is
+# no bbduk primer/linker filtering: the authors' MISAR_Split_BC_RNA.py reshapes R2
+# directly into a 16bp CB (BC2+BC1) + 10bp UMI read, which kb's 10xv2 preset parses.
+# We feed that into kb --workflow lamanno for velocity (the authors used cellranger-arc,
+# which yields only total counts). Reuses the mm10 lamanno index.
+# Run: snakemake -s Snakefile_rna --configfile config_rna.yaml -j <cores> --rerun-incomplete
+# ===================================================================
+import os
+configfile: "config_rna.yaml"
+SRA = config["sra_accessions"]
+OUT = config["output_dir"]; REF = config["ref_dir"]; LOG = config["log_dir"]
+IDX, T2G, C1, C2 = config["idx_name"], config["t2g_name"], config["c1_name"], config["c2_name"]
+
+rule all:
+    input: expand(os.path.join(OUT, "gencode", "{sra}", "counts_unfiltered", "adata.h5ad"), sra=SRA)
+
+rule prefetch:
+    output: os.path.join(OUT, "{sra}", "{sra}.sra")
+    params: outdir=OUT
+    shell: "prefetch --max-size 100GB --output-directory {params.outdir} {wildcards.sra}"
+
+rule fastqs:
+    input: os.path.join(OUT, "{sra}", "{sra}.sra")
+    output:
+        r1=os.path.join(OUT, "{sra}", "{sra}_1.fastq.gz"),   # cDNA
+        r2=os.path.join(OUT, "{sra}", "{sra}_2.fastq.gz"),   # barcode read
+    params: d=os.path.join(OUT, "{sra}"), tmp=os.path.join(OUT, "{sra}", "tmp")
+    threads: 16
+    shell:
+        "fasterq-dump --split-files -p -t {params.tmp} --outdir {params.d} --threads {threads} {input} && "
+        "pigz -p {threads} {params.d}/{wildcards.sra}_1.fastq {params.d}/{wildcards.sra}_2.fastq"
+
+rule split_bc:
+    input: os.path.join(OUT, "{sra}", "{sra}_2.fastq.gz")
+    output: os.path.join(OUT, "{sra}", "tmp", "{sra}_CBUMI.fastq")
+    shell: "python {workflow.basedir}/misar_split_rna.py -i {input} -o {output}"
+
+rule kb_count:
+    input:
+        cbumi=os.path.join(OUT, "{sra}", "tmp", "{sra}_CBUMI.fastq"),
+        cdna=os.path.join(OUT, "{sra}", "{sra}_1.fastq.gz"),
+        idx=os.path.join(REF, IDX), t2g=os.path.join(REF, T2G),
+        c1=os.path.join(REF, C1), c2=os.path.join(REF, C2),
+    output: os.path.join(OUT, "gencode", "{sra}", "counts_unfiltered", "adata.h5ad")
+    params: out=os.path.join(OUT, "gencode", "{sra}"), tmp=os.path.join(OUT, "gencode", "{sra}", "tmp")
+    log: os.path.join(LOG, "kb_count", "{sra}.log")
+    threads: 20
+    shell:
+        """
+        kb count -x 10xv2 --workflow {config[kb_workflow]} --h5ad --overwrite --tmp {params.tmp} \
+            -t {threads} -m 64G -i {input.idx} -g {input.t2g} -c1 {input.c1} -c2 {input.c2} \
+            -o {params.out} -w {workflow.basedir}/{config[whitelist]} \
+            {input.cbumi} {input.cdna} > {log} 2>&1
+        """

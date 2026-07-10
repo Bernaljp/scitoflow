@@ -1,0 +1,125 @@
+# ===================================================================
+# scIToFlow ATAC (chromatin) - raw SRA -> fragments -> peaks - Ibex
+# ===================================================================
+# Full, self-contained chromatin pipeline (the user's scripts only covered
+# fragments->peaks). Chain (Fan-lab Snakemake_ATAC raw->fragments, adapted to
+# Ibex + mm10, then the user's macs3 BEDPE peak step with genome hs->mm):
+#   fasterq-dump -> bbduk primer/linker1/linker2 -> BC_process (16bp barcode) ->
+#   taggd (vs 2500 whitelist) -> add_BC -> Trim Galore -> bwa mem ->
+#   sinto fragments -> bgzip/tabix -> MACS3 callpeak -f BEDPE.
+#
+# Entry point to start from an existing fragments file instead of raw SRA:
+#   snakemake peaks_from_fragments --config frag=/path/S.fragments.tsv.gz name=S
+#
+# Tools: conda env scitoflow-align (bbduk, taggd, sinto, bwa, samtools, macs3,
+# trim-galore, sra-tools). Run: snakemake -j <cores> --rerun-incomplete
+# ===================================================================
+import os
+configfile: "config.yaml"
+
+SRA_IDS = config["sra_accessions"]
+BBDUK   = config["bbduk_dir"]
+OUT     = config["output_dir"]
+GENOME  = config["genome_fasta"]
+BWAIDX  = config["bwa_index_prefix"]
+MACS_G  = config["macs_genome"]
+
+def d(sra, *p):  # per-sample path under output/<sra>/atac
+    return os.path.join(OUT, sra, "atac", *p)
+
+rule all:
+    input: expand(os.path.join(OUT, "{sra}", "atac", "{sra}_ATAC_peaks.narrowPeak"), sra=SRA_IDS)
+
+# --- bwa index (once) ----------------------------------------------
+rule bwa_index:
+    input: GENOME
+    output: BWAIDX + ".bwt"
+    log: os.path.join(config["log_dir"], "bwa_index.log")
+    shell: "mkdir -p $(dirname {BWAIDX}) && bwa index -p {BWAIDX} {input} > {log} 2>&1"
+
+# --- SRA -> fastq ---------------------------------------------------
+rule prefetch:
+    output: os.path.join(OUT, "{sra}", "{sra}.sra")
+    params: outdir=OUT
+    shell: "prefetch --max-size 100GB --output-directory {params.outdir} {wildcards.sra}"
+
+rule fastqs:
+    input: os.path.join(OUT, "{sra}", "{sra}.sra")
+    output:
+        r1=os.path.join(OUT, "{sra}", "{sra}_1.fastq.gz"),
+        r2=os.path.join(OUT, "{sra}", "{sra}_2.fastq.gz"),
+    params: outdir=os.path.join(OUT, "{sra}"), tmp=os.path.join(OUT, "{sra}", "tmp")
+    threads: 20
+    shell:
+        "fasterq-dump --split-files -p -t {params.tmp} --outdir {params.outdir} --threads {threads} {input} && "
+        "pigz -p {threads} {params.outdir}/{wildcards.sra}_1.fastq {params.outdir}/{wildcards.sra}_2.fastq"
+
+# --- bbduk primer/linker1/linker2 (ATAC literals) ------------------
+rule bbduk_primer:
+    input: r1=os.path.join(OUT,"{sra}","{sra}_1.fastq.gz"), r2=os.path.join(OUT,"{sra}","{sra}_2.fastq.gz")
+    output: o1=d("{sra}","tmp","p_R1.fq.gz"), o2=d("{sra}","tmp","p_R2.fq.gz")
+    threads: 20
+    shell: "{BBDUK} -Xmx60g in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} k=22 mm=f rcomp=f restrictleft=30 skipr1=t hdist=2 threads={threads} literal=CAAGCGTTGGCTTCTCGCATCT"
+
+rule bbduk_l1:
+    input: r1=d("{sra}","tmp","p_R1.fq.gz"), r2=d("{sra}","tmp","p_R2.fq.gz")
+    output: o1=d("{sra}","tmp","l1_R1.fq.gz"), o2=d("{sra}","tmp","l1_R2.fq.gz")
+    threads: 20
+    shell: "{BBDUK} -Xmx60g in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} k=30 mm=f rcomp=f restrictleft=114 skipr1=t hdist=3 threads={threads} literal=GATGTTTCGCATCGGCGTACGACTTAGCCT"
+
+rule bbduk_l2:
+    input: r1=d("{sra}","tmp","l1_R1.fq.gz"), r2=d("{sra}","tmp","l1_R2.fq.gz")
+    output: o1=d("{sra}","tmp","qc_R1.fq.gz"), o2=d("{sra}","tmp","qc_R2.fq.gz")
+    threads: 20
+    shell: "{BBDUK} -Xmx60g in1={input.r1} in2={input.r2} outm1={output.o1} outm2={output.o2} k=30 mm=f rcomp=f restrictleft=70 skipr1=t hdist=3 threads={threads} literal=ATCCACGTGCTTGAGAGGCCAGAGCATTCG"
+
+# --- barcode extract -> taggd correct -> attach to read names ------
+rule bc_process:
+    input: d("{sra}","tmp","qc_R2.fq.gz")
+    output: r2=d("{sra}","tmp","{sra}_R2.fastq"), bc=d("{sra}","tmp","{sra}_BC.fastq")
+    shell: "python {workflow.basedir}/BC_process.py -i {input} -o1 {output.r2} -o2 {output.bc}"
+
+rule taggd:
+    input: d("{sra}","tmp","{sra}_BC.fastq")
+    output: d("{sra}","tmp","{sra}_BC_tagged_results.tsv")
+    params: prefix=d("{sra}","tmp","{sra}_BC_tagged")
+    threads: 20
+    shell: "taggd_demultiplex --k 5 --subprocesses {threads} {workflow.basedir}/{config[whitelist]} {input} {params.prefix}"
+
+rule add_bc:
+    input:
+        r1=d("{sra}","tmp","qc_R1.fq.gz"), r2=d("{sra}","tmp","{sra}_R2.fastq"),
+        tsv=d("{sra}","tmp","{sra}_BC_tagged_results.tsv"),
+    output: r1=d("{sra}","tmp","{sra}_R1_bc.fastq"), r2=d("{sra}","tmp","{sra}_R2_bc.fastq")
+    shell: "python {workflow.basedir}/add_BC.py -i1 {input.r1} -i2 {input.r2} -l {input.tsv} -o1 {output.r1} -o2 {output.r2}"
+
+rule trim:
+    input: r1=d("{sra}","tmp","{sra}_R1_bc.fastq"), r2=d("{sra}","tmp","{sra}_R2_bc.fastq")
+    output: r1=d("{sra}","tmp","trim","{sra}_R1_bc_val_1.fq"), r2=d("{sra}","tmp","trim","{sra}_R2_bc_val_2.fq")
+    params: outdir=d("{sra}","tmp","trim")
+    shell: "trim_galore --paired --nextera --stringency 5 --cores 4 -o {params.outdir} {input.r1} {input.r2}"
+
+# --- align -> fragments --------------------------------------------
+rule bwa_align:
+    input:
+        r1=d("{sra}","tmp","trim","{sra}_R1_bc_val_1.fq"), r2=d("{sra}","tmp","trim","{sra}_R2_bc_val_2.fq"),
+        idx=BWAIDX + ".bwt",
+    output: d("{sra}","{sra}.sort.bam")
+    threads: 32
+    shell: "bwa mem -t {threads} {BWAIDX} {input.r1} {input.r2} | samtools sort -@ 8 -o {output} - && samtools index {output}"
+
+rule fragments:
+    input: d("{sra}","{sra}.sort.bam")
+    output: d("{sra}","{sra}.fragments.filtered.tsv.gz")
+    shell:
+        "sinto fragments -b {input} -p 8 -f {output}.bed --barcode_regex '[^:]*' && "
+        "sort -k1,1 -k2,2n {output}.bed | bgzip -c > {output} && rm -f {output}.bed && tabix -p bed {output}"
+
+# --- peaks (MACS3, BEDPE, mm) --------------------------------------
+rule peaks:
+    input: d("{sra}","{sra}.fragments.filtered.tsv.gz")
+    output: os.path.join(OUT, "{sra}", "atac", "{sra}_ATAC_peaks.narrowPeak")
+    params: outdir=os.path.join(OUT, "{sra}", "atac"), name="{sra}_ATAC"
+    shell:
+        "macs3 callpeak -t {input} -f BEDPE -g {MACS_G} -n {params.name} --outdir {params.outdir} "
+        "--nomodel --shift -100 --extsize 200 -B --SPMR --keep-dup all -q 0.05"

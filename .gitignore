@@ -5,3 +5,10 @@ build/
 dist/
 .pytest_cache/
 .ruff_cache/
+
+# Snakemake run artifacts
+.snakemake/
+ibex/**/out/
+ibex/**/err/
+ibex/**/logs/
+*.log
