@@ -459,6 +459,51 @@ class VAE(nn.Module):
         return torch.cat((z, zr), dim=-1), latent_full, velocity, latent_time, h
 
     @torch.no_grad()
+    def predict_at_time(self, data, target_t=None, edge_index_spatial=None, edge_index_expression=None):
+        """Decode predicted expression at a shared latent time ``target_t``.
+
+        The latent dynamics are a continuous-time neural ODE with a shared latent time, so the
+        fitted trajectory is defined for any time in [0, max]. We integrate each cell's trajectory
+        from its niche/initial condition to ``target_t`` and decode -> predicted expression per
+        decoded modality. This is the temporal-interpolation / forecast read-out; no retraining.
+
+        Mechanism (reuses `_grid_trajectories`): passing ``cell_times = target_t`` for every cell
+        makes the integration grid span [0, target_t] and interpolate every cell at the endpoint,
+        i.e. the decoded state at ``target_t``. Same decode path as
+        `scripts/in_silico_perturbation.py` (`_grid_trajectories(h, t)` -> `decoders[st](traj[st])`).
+
+        Parameters
+        ----------
+        data : dict {state: (N, observed)}
+            Modality dict (same as the other read-outs), used only to encode the per-cell niche h.
+        target_t : float | Tensor | None
+            Shared latent time to decode at. A scalar broadcasts to all cells; a Tensor gives a
+            per-cell target time. ``None`` reuses each cell's inferred latent time (equivalent to
+            `reconstruct_latent`'s decode) -- useful as a consistency check.
+        edge_index_spatial, edge_index_expression :
+            Passed through to `latent_embedding` (as in the other read-outs).
+
+        Returns
+        -------
+        dict {decoded_state: (N, observed)}  predicted expression per decoded modality.
+        """
+        self.eval()
+        out = self.latent_embedding(data, edge_index_spatial, edge_index_expression)
+        latent_state, latent_time = out[0], out[3]
+        n, L = self.n_states, self.latent
+        h = latent_state[:, n * L:]
+        if target_t is None:
+            cell_times = latent_time
+        elif torch.is_tensor(target_t):
+            cell_times = target_t.to(dtype=h.dtype, device=h.device)
+            if cell_times.ndim == 0:
+                cell_times = cell_times.expand(h.shape[0])
+        else:
+            cell_times = torch.full((h.shape[0],), float(target_t), device=h.device, dtype=h.dtype)
+        traj, _, _ = self._grid_trajectories(h, cell_times, test=True)
+        return {st: self.decoders[st](traj[st]) for st in self.topo.decoded}
+
+    @torch.no_grad()
     def project_velocities(self, data, projections, spatial_edge_index, expression_adjacency_list):
         """Project latent velocities onto a low-dim embedding via the learned basis
         (GraphVelo Eq. 3). `data` is the modality dict."""
