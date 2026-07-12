@@ -104,6 +104,30 @@ def build_model_adata(
     return adata, adata_model
 
 
+def preprocess_rna_moments(adata, n_top_genes: int = 100, has_unspliced: bool | None = None):
+    """RNA-only dynamo preprocessing + moments -> per-stage `adata_full` for the atlas builders.
+
+    Mirrors steps 5-6 of `build_model_adata` without the ATAC/chromatin channel, for spatial
+    transcriptomics atlases (MOSTA, Spateo) that provide spliced (+ optional unspliced) but no ATAC.
+    Requires `adata.layers['spliced']` and spatial coords in `obs['x_position']/['y_position']`
+    (or Visium `array_col`/`array_row`). Adds M_s (+ M_u/M_ss/... when unspliced is present), a
+    `var['score']` dynamo variability score, and returns the HVG-scored full adata.
+    """
+    if has_unspliced is None:
+        has_unspliced = "unspliced" in adata.layers
+    dyn.pp.Preprocessor().preprocess_adata(adata, recipe="monocle")
+    dyn.tl.moments(adata)  # computes M_s (+ M_u/M_ss/M_us/M_uu when unspliced is present)
+
+    adata_full = adata[:, adata.var["use_for_pca"].values].copy() if "use_for_pca" in adata.var else adata.copy()
+    # spatial coords: keep x/y_position if present, else derive from the Visium array grid
+    if "x_position" not in adata_full.obs and "array_col" in adata_full.obs:
+        adata_full.obs["x_position"] = adata_full.obs["array_col"].astype(float)
+        adata_full.obs["y_position"] = adata_full.obs["array_row"].astype(float)
+    if "score" not in adata_full.var:
+        raise KeyError("dynamo did not produce var['score']; check the preprocessing recipe")
+    return adata_full
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--rna_h5ad", required=True, help="kb-nac counts_unfiltered/adata.h5ad")

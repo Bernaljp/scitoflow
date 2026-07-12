@@ -1,9 +1,16 @@
 """
 Training loop for the scIToFlow VAE (GPU-preloaded, NeighborLoader minibatches).
 
-Extracted from the method-development notebook and consolidated. The optimization logic
-is preserved; the run device is resolved once (CUDA when available, else CPU) so the loop
-runs unchanged on a GPU and also runs on CPU for small data (tutorials, tests).
+FAITHFUL first-pass extraction from the method-development notebook
+(Base/model1new_multivelo_organized.ipynb), Phase A1 consolidation.
+Logic preserved verbatim on the default (spatial, CUDA) path.
+
+Two hardening additions (behavior byte-identical on the default path):
+  - device-agnostic: `device` is resolved to CUDA when available else CPU, so the loop runs
+    (and the unit tests fit a tiny model) on CPU.
+  - spatial-optional: when the model does not use the spatial factor OR the adata lacks
+    x_position/y_position, the spatial kNN is skipped and NeighborLoader batches over the
+    expression kNN instead (edge_index_spatial is then ignored by the model).
 """
 
 from scitoflow.core.model import reindex_adjacency
@@ -25,65 +32,21 @@ from torch_geometric.utils import subgraph
 
 def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=None, batch_size=200, grad_clip=1,
               shuffle=True, test=0.1, name='', optimizer='adam', random_seed=42, checkpoint_folder=None,
-              time_prior=None):
-    """Train a scIToFlow :class:`~scitoflow.VAE` on a spatial multi-omic AnnData.
-
-    The compute device is resolved automatically (CUDA when available, otherwise CPU). For
-    speed, the per-modality matrices are pre-loaded to the device once and minibatches are
-    drawn with a spatial-graph :class:`~torch_geometric.loader.NeighborLoader`; the best model
-    (by held-out reconstruction + trajectory loss) is restored at the end.
-
-    Parameters
-    ----------
-    model : scitoflow.VAE
-        The model to train. It is moved to the resolved device in place.
-    adata : anndata.AnnData
-        Spots x genes. Must carry the moment layers for the model's topology (for example
-        ``M_c``, ``M_u``, ``M_s`` for ``full``) and the spatial coordinates ``x_position`` and
-        ``y_position`` in ``adata.obs``. The data are read in double precision, so build the
-        model under ``torch.set_default_dtype(torch.float64)``.
-    epochs : int, default 50
-        Number of training epochs.
-    learning_rate : float, default 1e-2
-        Optimizer learning rate (a plateau scheduler reduces it during training).
-    tangent_loss_params : dict, optional
-        Parameters of the tangent-space velocity regularizer, with keys ``a``, ``b``, and
-        ``reg_lambda`` (for example ``{"a": 1.0, "b": 10.0, "reg_lambda": 1.0}``).
-    batch_size : int, default 200
-        Number of seed spots per minibatch.
-    test : float, default 0.1
-        Fraction of spots held out for validation.
-    optimizer : {'adam', 'adamW'}, default 'adam'
-        Optimizer to use.
-    random_seed : int, default 42
-        Seed for the train/test split.
-    checkpoint_folder : str, optional
-        Directory for per-epoch checkpoints. Defaults to a folder named after ``name`` in the
-        working directory.
-    time_prior : array-like, optional
-        Per-spot time label normalized to ``[0, 1]`` (developmental stage or labeling time).
-        When given and ``model.time_prior_weight > 0``, it softly supervises latent time.
-
-    Returns
-    -------
-    epochs : numpy.ndarray
-        The epoch indices.
-    val_recon : numpy.ndarray
-        Held-out reconstruction MSE per epoch.
-    val_traj : numpy.ndarray
-        Held-out trajectory MSE per epoch.
-    edge_index_spatial : torch.Tensor
-        The ``[2, E]`` spatial neighbor graph used for training (for readouts).
-    adj_list_expression : torch.Tensor
-        The ``(N, 30)`` expression neighbor-index list (for readouts and
-        :meth:`~scitoflow.VAE.project_velocities`).
-
-    See Also
-    --------
-    scitoflow.VAE.reconstruct_latent : latent trajectories, velocity, and latent time.
-    scitoflow.simulate_dataset : a small example dataset to try this on.
+              time_prior=None, device=None):
     """
-    
+    Training function optimized for GPU data handling.
+
+    Key optimizations:
+    1. Pre-loads data matrices (c, u, s) to device tensors once, avoiding
+       sparse-to-dense conversion and CPU-device transfer in every batch.
+    2. Uses global boolean masks on device for fast train/test splitting within batches.
+    3. Removes unused model_state_history list to save memory.
+
+    device : str | torch.device | None
+        Compute device. None -> CUDA if available else CPU.
+    """
+    device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+
     # --- Setup Folders and Optimizer ---
     checkpoint_folder = checkpoint_folder + f'/{name}/' if checkpoint_folder is not None else './' + name + '/'
     
@@ -98,45 +61,49 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     
     scheduler_plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.75, threshold=0.05, threshold_mode='rel',
+        optimizer, mode='min', factor=0.75, threshold=0.05, threshold_mode='rel', 
         patience=5, min_lr=1e-5,
     )
-
-    # --- Device: use the GPU when available, otherwise fall back to CPU ---
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-
-    # --- Optimization 1: Pre-load per-modality data to GPU (topology-driven) ---
-    print("Loading data and moving to GPU...")
+    
+    # --- Optimization 1: Pre-load per-modality data to device (topology-driven) ---
+    print(f"Loading data and moving to {device}...")
     states = model.topo.states
     matrices = {st: adata.layers[model.topo.layer[st]] for st in states}
     expr_matrix = matrices[model.topo.terminal]   # expression kNN on the terminal RNA state
     try:
         tensors = {st: torch.tensor(m.toarray(), dtype=torch.float64, device=device)
                    for st, m in matrices.items()}
-        print("Successfully pre-loaded data to GPU.")
+        print(f"Successfully pre-loaded data to {device}.")
     except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-        print(f"Warning: Could not pre-load data to GPU ({e}). Using slower, on-the-fly loading.")
+        print(f"Warning: Could not pre-load data to {device} ({e}). Using slower, on-the-fly loading.")
         tensors = None
-    
-    # --- Optional time prior (normalized [0,1] label per cell) preloaded to GPU ---
+
+    # --- Optional time prior (normalized [0,1] label per cell) preloaded to device ---
     time_prior_gpu = (torch.tensor(np.asarray(time_prior), dtype=torch.float64, device=device)
                       if time_prior is not None else None)
 
-    # --- Graph/Adjacency setup (move to GPU) ---
-    x_positions = np.vstack((adata.obs['x_position'].values, adata.obs['y_position'].values)).T
-    adj_matrix_spatial = kneighbors_graph(x_positions, n_neighbors=8, mode='connectivity', include_self=False)
-    edge_index_coo = adj_matrix_spatial.tocoo()
-    edge_index_spatial = torch.tensor(np.vstack((edge_index_coo.row, edge_index_coo.col)), dtype=torch.long, device=device)
-    
-    # Move all static graph data to GPU
-    full_data = Data(edge_index=edge_index_spatial, num_nodes=adata.n_obs).to(device)
-
+    # --- Graph/Adjacency setup (move to device) ---
+    # Expression kNN is always needed (tangent-loss basis + optional expression GNN).
     adj_matrix_expression = kneighbors_graph(expr_matrix, n_neighbors=30, mode='connectivity', include_self=False)
-    # edge_index_coo_expr = adj_matrix_expression.tocoo()
-    # edge_index_expression = torch.tensor(np.vstack((edge_index_coo_expr.row, edge_index_coo_expr.col)), dtype=torch.long).to(device)
     adj_list_expression = torch.tensor(adj_matrix_expression.nonzero()[1], dtype=torch.long, device=device).reshape(-1, 30)
-    
+
+    # Spatial is optional: use it only if the model uses the spatial factor AND coords are present.
+    has_coords = ('x_position' in adata.obs) and ('y_position' in adata.obs)
+    use_spatial = bool(getattr(model, 'use_spatial', True)) and has_coords
+    if use_spatial:
+        x_positions = np.vstack((adata.obs['x_position'].values, adata.obs['y_position'].values)).T
+        adj_matrix_loader = kneighbors_graph(x_positions, n_neighbors=8, mode='connectivity', include_self=False)
+    else:
+        # No spatial factor: batch over the expression kNN so NeighborLoader still forms
+        # locally-coherent neighborhoods. edge_index_spatial is then ignored by the model.
+        print("Spatial factor off (model.use_spatial=False or no x/y coords): batching over the expression graph.")
+        adj_matrix_loader = adj_matrix_expression
+    loader_coo = adj_matrix_loader.tocoo()
+    loader_edge_index = torch.tensor(np.vstack((loader_coo.row, loader_coo.col)), dtype=torch.long, device=device)
+
+    # Move all static graph data to device
+    full_data = Data(edge_index=loader_edge_index, num_nodes=adata.n_obs).to(device)
+
     
     # --- Train/Test Split ---
     np.random.seed(random_seed)
@@ -152,21 +119,26 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
     
     print(f"Training on {n_train} cells, testing on {n_test} cells")
     
-    # --- Optimization 2: Create global train/test masks on GPU ---
+    # --- Optimization 2: Create global train/test masks on device ---
     train_mask_global = torch.zeros(n_cells, dtype=torch.bool, device=device)
-    train_mask_global[list(train_indices_set)] = True 
+    train_mask_global[list(train_indices_set)] = True
 
     test_mask_global = torch.zeros(n_cells, dtype=torch.bool, device=device)
     test_mask_global[list(test_indices_set)] = True
-    
+
     # Create a tensor of test indices for the eval step
     test_indices_array = np.array(list(test_indices_set))
-    test_indices_tensor = torch.tensor(test_indices_array, dtype=torch.long).to(device)
-    
-    # Pre-calculate the test adjacency matrix (spatial)
-    test_adj_spatial = adj_matrix_spatial[test_indices_array][:, test_indices_array]
-    test_edge_coo_spatial = test_adj_spatial.tocoo()
-    edge_index_test_spatial = torch.tensor(np.vstack((test_edge_coo_spatial.row, test_edge_coo_spatial.col)), dtype=torch.long).to(device)
+    test_indices_tensor = torch.tensor(test_indices_array, dtype=torch.long, device=device)
+
+    # Pre-calculate the test adjacency matrix (spatial). None when spatial is off -> the model
+    # ignores edge_index_spatial in that case.
+    if use_spatial:
+        test_adj_spatial = adj_matrix_loader[test_indices_array][:, test_indices_array]
+        test_edge_coo_spatial = test_adj_spatial.tocoo()
+        edge_index_test_spatial = torch.tensor(np.vstack((test_edge_coo_spatial.row, test_edge_coo_spatial.col)),
+                                               dtype=torch.long, device=device)
+    else:
+        edge_index_test_spatial = None
 
     # --- Setup Loader and Model ---
     train_loader = NeighborLoader(full_data,
@@ -176,7 +148,7 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
                                   disjoint=True)
     
     model = model.to(device)
-    
+
     # --- Optimization 3: Removed unused model_state_history list ---
     epoch_history = [0]
     val_ae_history = [np.inf]
@@ -195,10 +167,11 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
         # Loop directly over the data loader
         for batch in train_loader:
             optimizer.zero_grad()
-            batch_idx = batch.n_id.to(device)  # On GPU
-            batch_edge_spatial_index = batch.edge_index # On GPU
-            
-            # (Assuming reindex_adjacency is defined and works on-GPU)
+            batch_idx = batch.n_id.to(device)  # On device
+            # loader subgraph edges; passed as edge_index_spatial (ignored by the model when spatial off)
+            batch_edge_spatial_index = batch.edge_index if use_spatial else None
+
+            # (reindex_adjacency works on the compute device)
             batch_edge_expression_index = reindex_adjacency(adj_list_expression, batch_idx, full_data.num_nodes, device=device)
             
             # --- Optimization 1 (Batch): per-modality data dict ---
@@ -206,7 +179,7 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
                 data = {st: tensors[st][batch_idx] for st in states}
             else:
                 batch_idx_cpu = batch_idx.cpu().numpy()
-                data = {st: torch.Tensor(matrices[st][batch_idx_cpu].toarray()).to(device) for st in states}
+                data = {st: torch.tensor(matrices[st][batch_idx_cpu].toarray(), dtype=torch.float64, device=device) for st in states}
 
             loss, validation_ae, validation_traj, tangent_loss, orig_index = model.loss(
                 data,
@@ -257,9 +230,9 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
             if tensors is not None:
                 data_test = {st: tensors[st][test_indices_tensor] for st in states}
             else:
-                data_test = {st: torch.Tensor(matrices[st][test_indices_array].toarray()).to(device) for st in states}
+                data_test = {st: torch.tensor(matrices[st][test_indices_array].toarray(), dtype=torch.float64, device=device) for st in states}
 
-            # Use pre-computed test spatial graph
+            # Use pre-computed test spatial graph (None when spatial is off)
             edge_index_test = edge_index_test_spatial
 
             # Re-index expression graph for test set
@@ -312,9 +285,9 @@ def train_vae(model, adata, epochs=50, learning_rate=1e-2, tangent_loss_params=N
 
     print('Loading best model at %d epochs.'%epoch_history[best_index])
     model.load_state_dict(torch.load(
-        checkpoint_folder+'model_state_epoch%d.params'%epoch_history[best_index], 
-        map_location=device
+        checkpoint_folder+'model_state_epoch%d.params'%epoch_history[best_index],
+        map_location=torch.device(device)
     ))
-    
-    return np.array(epoch_history)[1:], np.array(val_ae_history)[1:], np.array(val_traj_history)[1:], edge_index_spatial, adj_list_expression
+
+    return np.array(epoch_history)[1:], np.array(val_ae_history)[1:], np.array(val_traj_history)[1:], loader_edge_index, adj_list_expression
 
